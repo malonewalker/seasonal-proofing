@@ -4,13 +4,12 @@ from bs4 import BeautifulSoup
 import streamlit as st
 from io import BytesIO
 from datetime import datetime
+import time
 
 # --- Load Excel ---
 st.title("Best Pick Reports Seasonal Web Proofing")
 
 uploaded_file = st.file_uploader("Upload the Best Pick Excel file", type=["csv", "xlsx"])
-
-
 
 if uploaded_file:
     if uploaded_file.name.endswith(".csv"):
@@ -19,6 +18,15 @@ if uploaded_file:
         df = pd.read_excel(uploaded_file)
 
     st.success("File uploaded and loaded!")
+
+    # --- Rate limit slider ---
+    rate_limit = st.slider(
+        "Delay between requests (seconds)",
+        min_value=0.0,
+        max_value=5.0,
+        value=1.0,
+        step=0.1
+    )
 
     # --- Preprocess ---
     df["Category URL"] = df["Company Web Profile URL"].apply(lambda x: "/".join(str(x).split("/")[:5]))
@@ -39,7 +47,7 @@ if uploaded_file:
             res = requests.get(url, timeout=10)
             soup = BeautifulSoup(res.text, "html.parser")
             companies = []
-            
+
             for card in soup.select(".provider-summary, .company-card"):
                 name = card.find("h3")
                 badge = card.find(class_="years") or card.find(class_="badge")
@@ -57,6 +65,8 @@ if uploaded_file:
     with st.spinner("Scraping category pages..."):
         for cat_url in category_urls:
             scraped = extract_companies_from_page(cat_url)
+            time.sleep(rate_limit)  # Respect delay from user input
+
             expected_companies = expected[expected["Category URL"] == cat_url]
             issues = []
 
@@ -65,17 +75,23 @@ if uploaded_file:
                     issues.append(f"ERROR: {actual['error']}")
                     continue
                 name = actual["name"]
-                match = expected_companies[expected_companies["PublishedName"].str.strip().str.lower() == name.strip().lower()]
-                
+                match = expected_companies[
+                    expected_companies["PublishedName"].str.strip().str.lower() == name.strip().lower()
+                ]
+
                 if match.empty:
                     issues.append(f"Unexpected company: {name}")
                 else:
                     idx_expected = match.index[0] - expected_companies.index.min()
                     if idx_expected != i:
-                        issues.append(f"Wrong order: {name} (expected position {idx_expected + 1}, found {i + 1})")
+                        issues.append(
+                            f"Wrong order: {name} (expected position {idx_expected + 1}, found {i + 1})"
+                        )
                     expected_years = str(match["OldestBestPickText"].values[0]).strip()
                     if expected_years not in actual["years_text"]:
-                        issues.append(f"Wrong years: {name} - Expected '{expected_years}' but found '{actual['years_text']}'")
+                        issues.append(
+                            f"Wrong years: {name} - Expected '{expected_years}' but found '{actual['years_text']}'"
+                        )
 
             results.append({
                 "Category URL": cat_url,
