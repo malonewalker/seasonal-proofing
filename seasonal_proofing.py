@@ -19,14 +19,19 @@ if uploaded_file:
 
     st.success("File uploaded and loaded!")
 
-    # --- Rate limit slider ---
-    rate_limit = st.slider(
-        "Delay between requests (seconds)",
-        min_value=0.0,
-        max_value=5.0,
-        value=1.0,
-        step=0.1
-    )
+    # --- Toggle and Slider for Rate Limiting ---
+    enable_rate_limit = st.checkbox("Enable rate limiting between requests", value=True)
+
+    if enable_rate_limit:
+        rate_limit = st.slider(
+            "Delay between requests (seconds)",
+            min_value=0.0,
+            max_value=5.0,
+            value=1.0,
+            step=0.1
+        )
+    else:
+        rate_limit = 0.0
 
     # --- Preprocess ---
     df["Category URL"] = df["Company Web Profile URL"].apply(lambda x: "/".join(str(x).split("/")[:5]))
@@ -65,7 +70,7 @@ if uploaded_file:
     with st.spinner("Scraping category pages..."):
         for cat_url in category_urls:
             scraped = extract_companies_from_page(cat_url)
-            time.sleep(rate_limit)  # Respect delay from user input
+            time.sleep(rate_limit)  # Delay applied based on toggle/slider
 
             expected_companies = expected[expected["Category URL"] == cat_url]
             issues = []
