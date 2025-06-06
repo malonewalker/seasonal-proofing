@@ -86,14 +86,14 @@ if uploaded_file:
     st.dataframe(results_df)
 
     # Summary stats
-total_categories = len(results_df)
-error_categories = results_df[results_df["Errors"] != "No issues"]
-no_error_count = total_categories - len(error_categories)
+    total_categories = len(results_df)
+    error_categories = results_df[results_df["Errors"] != "No issues"]
+    no_error_count = total_categories - len(error_categories)
 
-st.metric("Total Categories", total_categories)
-st.metric("Categories With Errors", len(error_categories))
-st.metric("Categories With No Errors", no_error_count)
-st.metric("Total Errors", error_categories["Errors"].str.count(";").sum())
+    st.metric("Total Categories", total_categories)
+    st.metric("Categories With Errors", len(error_categories))
+    st.metric("Categories With No Errors", no_error_count)
+    st.metric("Total Errors", error_categories["Errors"].str.count(";").sum())
 
     # --- Export ---
     towrite = BytesIO()
