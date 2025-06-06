@@ -6,9 +6,10 @@ from io import BytesIO
 from datetime import datetime
 import time
 
-# --- Load Excel ---
+# --- Title ---
 st.title("Best Pick Reports Seasonal Web Proofing")
 
+# --- File Upload ---
 uploaded_file = st.file_uploader("Upload the Best Pick Excel file", type=["csv", "xlsx"])
 
 if uploaded_file:
@@ -32,6 +33,9 @@ if uploaded_file:
         )
     else:
         rate_limit = 0.0
+
+    # Debugging output
+    st.write(f"Rate limiting is {'enabled' if enable_rate_limit else 'disabled'}, delay = {rate_limit} seconds")
 
     # --- Preprocess ---
     df["Category URL"] = df["Company Web Profile URL"].apply(lambda x: "/".join(str(x).split("/")[:5]))
@@ -70,7 +74,7 @@ if uploaded_file:
     with st.spinner("Scraping category pages..."):
         for cat_url in category_urls:
             scraped = extract_companies_from_page(cat_url)
-            time.sleep(rate_limit)  # Delay applied based on toggle/slider
+            time.sleep(rate_limit)  # Controlled delay between requests
 
             expected_companies = expected[expected["Category URL"] == cat_url]
             issues = []
@@ -109,7 +113,6 @@ if uploaded_file:
     st.subheader("Validation Results by Category")
     st.dataframe(results_df)
 
-    # Summary stats
     total_categories = len(results_df)
     error_categories = results_df[results_df["Errors"] != "No issues"]
     no_error_count = total_categories - len(error_categories)
