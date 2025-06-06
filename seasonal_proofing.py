@@ -9,6 +9,9 @@ from datetime import datetime
 st.title("Best Pick Reports Seasonal Web Proofing")
 
 uploaded_file = st.file_uploader("Upload the Best Pick Excel file", type=["csv", "xlsx"])
+
+rate_limit = st.slider("Delay between requests (seconds)", min_value=0.0, max_value=5.0, value=1.0, step=0.1)
+
 if uploaded_file:
     if uploaded_file.name.endswith(".csv"):
         df = pd.read_csv(uploaded_file)
