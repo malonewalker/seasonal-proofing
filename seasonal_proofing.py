@@ -1,98 +1,90 @@
 import streamlit as st
 import pandas as pd
-import requests
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 from bs4 import BeautifulSoup
 from time import sleep
 from datetime import datetime
 from io import BytesIO
-import urllib3
+import os
 
-# Disable SSL warnings
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+st.title("🕵️‍♂️ Best Pick Reports Scraper (Selenium)")
 
-st.title("🔍 Best Pick Reports Category Scraper")
-
-# --- Upload File ---
-uploaded_file = st.file_uploader("Upload a CSV or Excel file with a column named 'URL'", type=["csv", "xlsx"])
+uploaded_file = st.file_uploader("Upload CSV or Excel with a column named 'URL'", type=["csv", "xlsx"])
 
 if uploaded_file:
-    # --- Load Data ---
     if uploaded_file.name.endswith(".csv"):
         df = pd.read_csv(uploaded_file)
     else:
         df = pd.read_excel(uploaded_file)
 
     if "URL" not in df.columns:
-        st.error("❌ Your file must contain a column named 'URL'")
+        st.error("Your file must contain a column named 'URL'")
         st.stop()
 
     urls = df["URL"].dropna().unique().tolist()
-    st.success(f"✅ Loaded {len(urls)} unique URLs.")
+    st.success(f"Loaded {len(urls)} URLs.")
 
-    # --- Scraper Function with Debug Logging ---
-    def scrape_category_page(url):
-        st.write(f"🔍 Scraping: {url}")
-        try:
-            res = requests.get(url, timeout=15, verify=False)
-            res.raise_for_status()
-            soup = BeautifulSoup(res.text, "html.parser")
-            companies = []
+    # --- Setup Chrome headless driver ---
+    def get_driver():
+        chrome_options = Options()
+        chrome_options.add_argument("--headless")
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
 
-            cards = soup.find_all("div", class_="provider-summary")
-            st.write(f"➡️ Found {len(cards)} company cards.")
+        # Auto-detect or customize path to chromedriver
+        service = Service()  # You can use: Service("/path/to/chromedriver")
+        return webdriver.Chrome(service=service, options=chrome_options)
 
-            for idx, card in enumerate(cards):
-                link = card.find("a", class_="provider-link")
-                if not link:
-                    continue
+    # --- Scraper Function ---
+    def scrape_with_selenium(url, driver):
+        driver.get(url)
+        sleep(3)  # wait for JS to load
+        soup = BeautifulSoup(driver.page_source, "html.parser")
+        companies = []
 
-                name_tag = link.find("h3", class_="provider-name")
-                badge_tag = link.find("div", class_="badge")
-                years_text = ""
+        cards = soup.find_all("div", class_="provider-summary")
+        for idx, card in enumerate(cards):
+            link = card.find("a", class_="provider-link")
+            if not link:
+                continue
 
-                if badge_tag:
-                    span = badge_tag.find("span")
-                    if span:
-                        years_text = span.get_text(strip=True)
+            name_tag = link.find("h3", class_="provider-name")
+            badge_tag = link.find("div", class_="badge")
+            years_text = ""
+            if badge_tag and badge_tag.find("span"):
+                years_text = badge_tag.find("span").get_text(strip=True)
 
-                if name_tag:
-                    company = {
-                        "Category URL": url,
-                        "Company Name": name_tag.get_text(strip=True),
-                        "Years as Best Pick": years_text,
-                        "Position on Page": idx + 1
-                    }
-                    st.write(company)
-                    companies.append(company)
+            if name_tag:
+                companies.append({
+                    "Category URL": url,
+                    "Company Name": name_tag.get_text(strip=True),
+                    "Years as Best Pick": years_text,
+                    "Position on Page": idx + 1
+                })
 
-            return companies
-
-        except Exception as e:
-            st.error(f"❌ Error scraping {url}: {e}")
-            return [{
-                "Category URL": url,
-                "Company Name": "ERROR",
-                "Years as Best Pick": f"Error: {str(e)}",
-                "Position on Page": None
-            }]
+        return companies
 
     # --- Run Scraping ---
     all_results = []
+    driver = get_driver()
     progress = st.progress(0)
 
     for i, url in enumerate(urls):
-        results = scrape_category_page(url)
-        all_results.extend(results)
+        st.write(f"Scraping: {url}")
+        companies = scrape_with_selenium(url, driver)
+        all_results.extend(companies)
         progress.progress((i + 1) / len(urls))
         sleep(1)
 
-    results_df = pd.DataFrame(all_results)
+    driver.quit()
 
-    # --- Show Output ---
-    st.subheader("📊 Scraped Results")
+    # --- Show and Save Output ---
+    results_df = pd.DataFrame(all_results)
+    st.subheader("✅ Scraped Results")
     st.dataframe(results_df)
 
-    # --- Export Excel ---
     towrite = BytesIO()
     results_df.to_excel(towrite, index=False, engine="openpyxl")
     towrite.seek(0)
