@@ -33,47 +33,52 @@ if uploaded_file:
 
     # --- Final working scraper function ---
     def scrape_category_page(url):
-        try:
-            res = requests.get(url, timeout=15, verify=False)
-            res.raise_for_status()
-            soup = BeautifulSoup(res.text, "html.parser")
-            companies = []
+    st.write(f"🔍 Scraping: {url}")
+    try:
+        res = requests.get(url, timeout=15, verify=False)
+        res.raise_for_status()
+        soup = BeautifulSoup(res.text, "html.parser")
+        companies = []
 
-            cards = soup.find_all("div", class_="provider-summary")
-            if not cards:
-                print(f"[DEBUG] No provider-summary elements found on {url}")
+        # Try to find the company cards
+        cards = soup.find_all("div", class_="provider-summary")
+        st.write(f"Found {len(cards)} provider-summary cards.")
 
-            for idx, card in enumerate(cards):
-                link = card.find("a", class_="provider-link")
-                if not link:
-                    continue
+        for idx, card in enumerate(cards):
+            link = card.find("a", class_="provider-link")
+            if not link:
+                continue
 
-                name_tag = link.find("h3", class_="provider-name")
-                badge_tag = link.find("div", class_="badge")
-                years_text = ""
+            name_tag = link.find("h3", class_="provider-name")
+            badge_tag = link.find("div", class_="badge")
+            years_text = ""
 
-                if badge_tag:
-                    span = badge_tag.find("span")
-                    if span:
-                        years_text = span.get_text(strip=True)
+            if badge_tag:
+                span = badge_tag.find("span")
+                if span:
+                    years_text = span.get_text(strip=True)
 
-                if name_tag:
-                    companies.append({
-                        "Category URL": url,
-                        "Company Name": name_tag.get_text(strip=True),
-                        "Years as Best Pick": years_text,
-                        "Position on Page": idx + 1
-                    })
+            if name_tag:
+                company = {
+                    "Category URL": url,
+                    "Company Name": name_tag.get_text(strip=True),
+                    "Years as Best Pick": years_text,
+                    "Position on Page": idx + 1
+                }
+                st.write(company)  # Show each company directly in app
+                companies.append(company)
 
-            return companies
+        return companies
 
-        except Exception as e:
-            return [{
-                "Category URL": url,
-                "Company Name": "ERROR",
-                "Years as Best Pick": f"Error: {str(e)}",
-                "Position on Page": None
-            }]
+    except Exception as e:
+        st.error(f"Error scraping {url}: {e}")
+        return [{
+            "Category URL": url,
+            "Company Name": "ERROR",
+            "Years as Best Pick": f"Error: {str(e)}",
+            "Position on Page": None
+        }]
+
 
     # --- Scrape all URLs ---
     all_results = []
