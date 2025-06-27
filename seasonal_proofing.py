@@ -12,7 +12,8 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 st.title("📄 Best Pick Reports Scraper")
 
-uploaded_file = st.file_uploader("Upload a CSV or Excel file with category-level URLs", type=["csv", "xlsx"])
+# --- Upload URL List ---
+uploaded_file = st.file_uploader("Upload a CSV or Excel file with a column named 'URL'", type=["csv", "xlsx"])
 
 if uploaded_file:
     # --- Read File ---
@@ -30,7 +31,7 @@ if uploaded_file:
     st.success(f"Loaded {len(urls)} unique URLs.")
     st.write("Scraping will begin below...")
 
-    # --- Scrape Function ---
+    # --- Scraper Function ---
     def scrape_category_page(url):
         try:
             res = requests.get(url, timeout=15, verify=False)
@@ -38,9 +39,13 @@ if uploaded_file:
             soup = BeautifulSoup(res.text, "html.parser")
             companies = []
 
-            for idx, card in enumerate(soup.select(".provider-summary")):
-                name_tag = card.find(class_="provider-name")
-                years_tag = card.find(class_="years") or card.find(class_="badge")
+            cards = soup.select(".provider-summary")
+            if not cards:
+                print(f"[DEBUG] No .provider-summary elements found on {url}")
+
+            for idx, card in enumerate(cards):
+                name_tag = card.find("h3", class_="provider-name")
+                years_tag = card.find("div", class_="years")
 
                 if name_tag:
                     companies.append({
@@ -51,6 +56,7 @@ if uploaded_file:
                     })
 
             return companies
+
         except Exception as e:
             return [{
                 "Category URL": url,
@@ -59,7 +65,7 @@ if uploaded_file:
                 "Position on Page": None
             }]
 
-    # --- Progress + Results ---
+    # --- Scraping Loop ---
     all_results = []
     progress = st.progress(0)
 
@@ -67,21 +73,21 @@ if uploaded_file:
         results = scrape_category_page(url)
         all_results.extend(results)
         progress.progress((i + 1) / len(urls))
-        sleep(1)
+        sleep(1)  # Respectful delay
 
     results_df = pd.DataFrame(all_results)
 
-    # --- Display Table ---
+    # --- Display Results ---
     st.subheader("📊 Scraped Results")
     st.dataframe(results_df)
 
-    # --- Export to Excel ---
+    # --- Download as Excel ---
     towrite = BytesIO()
     results_df.to_excel(towrite, index=False, engine="openpyxl")
     towrite.seek(0)
 
     st.download_button(
-        label="📥 Download Excel",
+        label="📥 Download Excel File",
         data=towrite,
         file_name=f"bestpick_scraped_{datetime.today().date()}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
