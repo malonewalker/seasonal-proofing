@@ -7,23 +7,37 @@ from datetime import datetime
 from io import BytesIO
 import urllib3
 
-# --- Streamlit UI ---
-st.title("Best Pick Reports Seasonal Web Proofing")
+# --- PASSWORD GATE ---
+st.title("🔒 Best Pick Reports Seasonal Web Proofing")
 
+PASSWORD = "BPRFSR"
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+
+if not st.session_state.authenticated:
+    password_input = st.text_input("Enter password to continue:", type="password")
+    if password_input == PASSWORD:
+        st.session_state.authenticated = True
+        st.experimental_rerun()
+    elif password_input:
+        st.error("❌ Incorrect password.")
+    st.stop()
+
+# --- File Upload ---
 uploaded_file = st.file_uploader("Upload the Best Pick CSV file", type=["csv"])
 
 if uploaded_file:
     df = pd.read_csv(uploaded_file)
     st.success("File uploaded and loaded!")
 
-    # --- Disable SSL warnings for environments with untrusted certs ---
+    # Disable SSL warnings
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-    # --- Category URL Extraction ---
+    # --- Clean & Prepare ---
     def extract_category_url(url):
         parts = str(url).strip().split("/")
         if len(parts) >= 6:
-            return "/".join(parts[:5])  # https://www.bestpickreports.com/category/city
+            return "/".join(parts[:5])  # e.g. https://www.bestpickreports.com/appliance-repair/atlanta
         return None
 
     df["Category URL"] = df["Company Web Profile URL"].apply(extract_category_url)
@@ -32,7 +46,6 @@ if uploaded_file:
     valid_df = df.dropna(subset=["Category URL"])
     category_urls = valid_df["Category URL"].drop_duplicates().tolist()
 
-    # Expected DataFrame sorted by Category and Oldest Signing Date
     expected = (
         valid_df.sort_values(["Category URL", "Oldest Signing Date"])
                 .groupby("Category URL")
@@ -48,26 +61,28 @@ if uploaded_file:
             soup = BeautifulSoup(res.text, "html.parser")
             companies = []
 
-            for card in soup.select(".provider-summary, .company-card"):
-                name = card.find("h3")
-                badge = card.find(class_="years") or card.find(class_="badge")
-                if name:
+            for idx, card in enumerate(soup.select(".provider-summary")):
+                name_tag = card.find(class_="provider-name")
+                years_tag = card.find(class_="years") or card.find(class_="badge")
+
+                if name_tag:
                     companies.append({
-                        "name": name.get_text(strip=True),
-                        "years_text": badge.get_text(strip=True) if badge else ""
+                        "name": name_tag.get_text(strip=True),
+                        "years_text": years_tag.get_text(strip=True) if years_tag else "",
+                        "position": idx + 1
                     })
             return companies
         except Exception as e:
             return [{"error": str(e)}]
 
-    # --- Progress Tracker ---
+    # --- Validation ---
     results = []
     progress_bar = st.progress(0)
     progress_step = 1 / len(category_urls)
 
     for i, cat_url in enumerate(category_urls):
         scraped = extract_companies_from_page(cat_url)
-        time.sleep(1.0)  # Limit: 1 request per second
+        time.sleep(1.0)  # One request per second
 
         expected_companies = expected[expected["Category URL"] == cat_url]
         issues = []
@@ -88,26 +103,21 @@ if uploaded_file:
                 if name not in actual_names:
                     issues.append(f"Missing company from page: {name}")
 
-            # 3. Check order and year badge
-            filtered_scraped = [c for c in scraped if c["name"].strip().lower() in expected_names]
+            # 3. Validate order and years
+            for expected_idx, row in expected_companies.iterrows():
+                expected_name = row["PublishedName"].strip().lower()
+                expected_years = str(row["OldestBestPickText"]).strip()
 
-            for idx, actual in enumerate(filtered_scraped):
-                name = actual["name"].strip().lower()
-                match = expected_companies[
-                    expected_companies["PublishedName"].str.strip().str.lower() == name
-                ]
-                if not match.empty:
-                    expected_idx = match.index[0] - expected_companies.index.min()
-                    if expected_idx != idx:
-                        issues.append(
-                            f"Wrong order: {name} (expected {expected_idx + 1}, found {idx + 1})"
-                        )
-
-                    expected_years = str(match["OldestBestPickText"].values[0]).strip()
+                # Find actual scraped record
+                matches = [c for c in scraped if c["name"].strip().lower() == expected_name]
+                if matches:
+                    actual = matches[0]
+                    actual_position = actual["position"]
+                    expected_position = expected_companies.index.get_loc(expected_idx) + 1
+                    if actual_position != expected_position:
+                        issues.append(f"Wrong order: {expected_name} (expected {expected_position}, found {actual_position})")
                     if expected_years not in actual["years_text"]:
-                        issues.append(
-                            f"Wrong years: {name} - Expected '{expected_years}' but found '{actual['years_text']}'"
-                        )
+                        issues.append(f"Wrong years: {expected_name} - Expected '{expected_years}' but found '{actual['years_text']}'")
 
         if issues:
             results.append({
@@ -117,11 +127,11 @@ if uploaded_file:
 
         progress_bar.progress(min((i + 1) * progress_step, 1.0))
 
-    # --- Results ---
+    # --- Show Only Errors ---
     if results:
         results_df = pd.DataFrame(results)
 
-        st.subheader("❌ Errors Found in the Following Categories")
+        st.subheader("❌ Errors Found")
         st.dataframe(results_df)
 
         towrite = BytesIO()
