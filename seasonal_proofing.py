@@ -1,64 +1,37 @@
+import streamlit as st
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
-import streamlit as st
-import time
+from time import sleep
 from datetime import datetime
 from io import BytesIO
 import urllib3
 
-st.title("🔒 Best Pick Reports Seasonal Web Proofing")
+# Disable SSL warnings
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-PASSWORD = "BPRFSR"
-if "authenticated" not in st.session_state:
-    st.session_state.authenticated = False
+st.title("📄 Best Pick Reports Scraper")
 
-if not st.session_state.authenticated:
-    password_input = st.text_input("Enter password to continue:", type="password")
-    if password_input == PASSWORD:
-        st.session_state.authenticated = True
-        st.success("✅ Password correct. You are now logged in.")
-    elif password_input:
-        st.error("❌ Incorrect password.")
-        st.stop()
-
-# Prevent access to rest of the app until authenticated
-if not st.session_state.authenticated:
-    st.warning("Please enter the password to continue.")
-    st.stop()
-
-# --- File Upload ---
-uploaded_file = st.file_uploader("Upload the Best Pick CSV file", type=["csv"])
+uploaded_file = st.file_uploader("Upload a CSV or Excel file with category-level URLs", type=["csv", "xlsx"])
 
 if uploaded_file:
-    df = pd.read_csv(uploaded_file)
-    st.success("File uploaded and loaded!")
+    # --- Read File ---
+    if uploaded_file.name.endswith(".csv"):
+        df = pd.read_csv(uploaded_file)
+    else:
+        df = pd.read_excel(uploaded_file)
 
-    # Disable SSL warnings
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    if "URL" not in df.columns:
+        st.error("❌ Input file must contain a column named 'URL'")
+        st.stop()
 
-    # --- Extract category-level URL ---
-    def extract_category_url(url):
-        parts = str(url).strip().split("/")
-        if len(parts) >= 6:
-            return "/".join(parts[:5])  # e.g., https://www.bestpickreports.com/appliance-repair/atlanta
-        return None
+    urls = df["URL"].dropna().unique().tolist()
 
-    df["Category URL"] = df["Company Web Profile URL"].apply(extract_category_url)
-    df["Oldest Signing Date"] = pd.to_datetime(df["Oldest Signing Date"], errors="coerce")
+    st.success(f"Loaded {len(urls)} unique URLs.")
+    st.write("Scraping will begin below...")
 
-    valid_df = df.dropna(subset=["Category URL"])
-    category_urls = valid_df["Category URL"].drop_duplicates().tolist()
-
-    expected = (
-        valid_df.sort_values(["Category URL", "Oldest Signing Date"])
-                .groupby("Category URL")
-                .apply(lambda x: x.reset_index(drop=True))
-                .reset_index(drop=True)
-    )
-
-    # --- Scraper Function ---
-    def extract_companies_from_page(url):
+    # --- Scrape Function ---
+    def scrape_category_page(url):
         try:
             res = requests.get(url, timeout=15, verify=False)
             res.raise_for_status()
@@ -71,85 +44,45 @@ if uploaded_file:
 
                 if name_tag:
                     companies.append({
-                        "name": name_tag.get_text(strip=True),
-                        "years_text": years_tag.get_text(strip=True) if years_tag else "",
-                        "position": idx + 1
+                        "Category URL": url,
+                        "Company Name": name_tag.get_text(strip=True),
+                        "Years as Best Pick": years_tag.get_text(strip=True) if years_tag else "",
+                        "Position on Page": idx + 1
                     })
+
             return companies
         except Exception as e:
-            return [{"error": str(e)}]
+            return [{
+                "Category URL": url,
+                "Company Name": "ERROR",
+                "Years as Best Pick": f"Error: {str(e)}",
+                "Position on Page": None
+            }]
 
-    # --- Validation ---
-    results = []
-    progress_bar = st.progress(0)
-    progress_step = 1 / len(category_urls)
+    # --- Progress + Results ---
+    all_results = []
+    progress = st.progress(0)
 
-    for i, cat_url in enumerate(category_urls):
-        scraped = extract_companies_from_page(cat_url)
-        time.sleep(1.0)
+    for i, url in enumerate(urls):
+        results = scrape_category_page(url)
+        all_results.extend(results)
+        progress.progress((i + 1) / len(urls))
+        sleep(1)
 
-        expected_companies = expected[expected["Category URL"] == cat_url]
-        issues = []
+    results_df = pd.DataFrame(all_results)
 
-        if scraped and "error" in scraped[0]:
-            issues.append(f"ERROR: {scraped[0]['error']}")
-        else:
-            actual_names = [c["name"].strip().lower() for c in scraped]
-            expected_names = expected_companies["PublishedName"].str.strip().str.lower().tolist()
+    # --- Display Table ---
+    st.subheader("📊 Scraped Results")
+    st.dataframe(results_df)
 
-            # 1. Unexpected companies on page
-            for name in actual_names:
-                if name not in expected_names:
-                    issues.append(f"Unexpected company on page: {name}")
+    # --- Export to Excel ---
+    towrite = BytesIO()
+    results_df.to_excel(towrite, index=False, engine="openpyxl")
+    towrite.seek(0)
 
-            # 2. Missing companies from page
-            for name in expected_names:
-                if name not in actual_names:
-                    issues.append(f"Missing company from page: {name}")
-
-            # 3. Check order and years
-            for expected_idx, row in expected_companies.iterrows():
-                expected_name = row["PublishedName"].strip().lower()
-                expected_years = str(row["OldestBestPickText"]).strip()
-
-                matches = [c for c in scraped if c["name"].strip().lower() == expected_name]
-                if matches:
-                    actual = matches[0]
-                    actual_position = actual["position"]
-                    expected_position = expected_companies.index.get_loc(expected_idx) + 1
-
-                    if actual_position != expected_position:
-                        issues.append(f"Wrong order: {expected_name} (expected {expected_position}, found {actual_position})")
-
-                    if expected_years not in actual["years_text"]:
-                        issues.append(
-                            f"Wrong years: {expected_name} - Expected '{expected_years}' but found '{actual['years_text']}'"
-                        )
-
-        if issues:
-            results.append({
-                "Category URL": cat_url,
-                "Errors": "; ".join(issues)
-            })
-
-        progress_bar.progress(min((i + 1) * progress_step, 1.0))
-
-    # --- Show Errors Only ---
-    if results:
-        results_df = pd.DataFrame(results)
-
-        st.subheader("❌ Errors Found")
-        st.dataframe(results_df)
-
-        towrite = BytesIO()
-        results_df.to_csv(towrite, index=False)
-        towrite.seek(0)
-
-        st.download_button(
-            label="Download Errors as CSV",
-            data=towrite,
-            file_name=f"bestpick_validation_errors_{datetime.today().date()}.csv",
-            mime="text/csv"
-        )
-    else:
-        st.success("✅ All categories passed validation. No errors found.")
+    st.download_button(
+        label="📥 Download Excel",
+        data=towrite,
+        file_name=f"bestpick_scraped_{datetime.today().date()}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
