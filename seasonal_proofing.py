@@ -7,7 +7,6 @@ from datetime import datetime
 from io import BytesIO
 import urllib3
 
-# --- PASSWORD GATE ---
 st.title("🔒 Best Pick Reports Seasonal Web Proofing")
 
 PASSWORD = "BPRFSR"
@@ -18,10 +17,11 @@ if not st.session_state.authenticated:
     password_input = st.text_input("Enter password to continue:", type="password")
     if password_input == PASSWORD:
         st.session_state.authenticated = True
-        st.experimental_rerun()
+        st.success("✅ Password correct. You are now logged in.")
+        st.stop()
     elif password_input:
         st.error("❌ Incorrect password.")
-    st.stop()
+        st.stop()
 
 # --- File Upload ---
 uploaded_file = st.file_uploader("Upload the Best Pick CSV file", type=["csv"])
