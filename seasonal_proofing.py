@@ -2,58 +2,49 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 import streamlit as st
-from io import BytesIO
-from datetime import datetime
 import time
+from datetime import datetime
+from io import BytesIO
+import urllib3
 
-# --- Title ---
+# --- Streamlit UI ---
 st.title("Best Pick Reports Seasonal Web Proofing")
 
-# --- File Upload ---
-uploaded_file = st.file_uploader("Upload the Best Pick Excel file", type=["csv", "xlsx"])
+uploaded_file = st.file_uploader("Upload the Best Pick CSV file", type=["csv"])
 
 if uploaded_file:
-    if uploaded_file.name.endswith(".csv"):
-        df = pd.read_csv(uploaded_file)
-    else:
-        df = pd.read_excel(uploaded_file)
-
+    df = pd.read_csv(uploaded_file)
     st.success("File uploaded and loaded!")
 
-    # --- Toggle and Slider for Rate Limiting ---
-    enable_rate_limit = st.checkbox("Enable rate limiting between requests", value=True)
+    # --- Disable SSL warnings for environments with untrusted certs ---
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-    if enable_rate_limit:
-        rate_limit = st.slider(
-            "Delay between requests (seconds)",
-            min_value=0.0,
-            max_value=5.0,
-            value=1.0,
-            step=0.1
-        )
-    else:
-        rate_limit = 0.0
+    # --- Category URL Extraction ---
+    def extract_category_url(url):
+        parts = str(url).strip().split("/")
+        if len(parts) >= 6:
+            return "/".join(parts[:5])  # https://www.bestpickreports.com/category/city
+        return None
 
-    # Debugging output
-    st.write(f"Rate limiting is {'enabled' if enable_rate_limit else 'disabled'}, delay = {rate_limit} seconds")
-
-    # --- Preprocess ---
-    df["Category URL"] = df["Company Web Profile URL"].apply(lambda x: "/".join(str(x).split("/")[:5]))
+    df["Category URL"] = df["Company Web Profile URL"].apply(extract_category_url)
     df["Oldest Signing Date"] = pd.to_datetime(df["Oldest Signing Date"], errors="coerce")
 
+    valid_df = df.dropna(subset=["Category URL"])
+    category_urls = valid_df["Category URL"].drop_duplicates().tolist()
+
+    # Expected DataFrame sorted by Category and Oldest Signing Date
     expected = (
-        df.sort_values("Oldest Signing Date")
-          .groupby("Category URL")
-          .apply(lambda x: x.reset_index(drop=True))
-          .reset_index(drop=True)
+        valid_df.sort_values(["Category URL", "Oldest Signing Date"])
+                .groupby("Category URL")
+                .apply(lambda x: x.reset_index(drop=True))
+                .reset_index(drop=True)
     )
 
-    category_urls = expected["Category URL"].dropna().unique()
-
-    # --- Scraper ---
+    # --- Scraper Function ---
     def extract_companies_from_page(url):
         try:
-            res = requests.get(url, timeout=10)
+            res = requests.get(url, timeout=15, verify=False)
+            res.raise_for_status()
             soup = BeautifulSoup(res.text, "html.parser")
             companies = []
 
@@ -69,67 +60,79 @@ if uploaded_file:
         except Exception as e:
             return [{"error": str(e)}]
 
+    # --- Progress Tracker ---
     results = []
+    progress_bar = st.progress(0)
+    progress_step = 1 / len(category_urls)
 
-    with st.spinner("Scraping category pages..."):
-        for cat_url in category_urls:
-            scraped = extract_companies_from_page(cat_url)
-            time.sleep(rate_limit)  # Controlled delay between requests
+    for i, cat_url in enumerate(category_urls):
+        scraped = extract_companies_from_page(cat_url)
+        time.sleep(1.0)  # Limit: 1 request per second
 
-            expected_companies = expected[expected["Category URL"] == cat_url]
-            issues = []
+        expected_companies = expected[expected["Category URL"] == cat_url]
+        issues = []
 
-            for i, actual in enumerate(scraped):
-                if "error" in actual:
-                    issues.append(f"ERROR: {actual['error']}")
-                    continue
-                name = actual["name"]
+        if scraped and "error" in scraped[0]:
+            issues.append(f"ERROR: {scraped[0]['error']}")
+        else:
+            actual_names = [c["name"].strip().lower() for c in scraped]
+            expected_names = expected_companies["PublishedName"].str.strip().str.lower().tolist()
+
+            # 1. Unexpected companies on page
+            for name in actual_names:
+                if name not in expected_names:
+                    issues.append(f"Unexpected company on page: {name}")
+
+            # 2. Missing companies from page
+            for name in expected_names:
+                if name not in actual_names:
+                    issues.append(f"Missing company from page: {name}")
+
+            # 3. Check order and year badge
+            filtered_scraped = [c for c in scraped if c["name"].strip().lower() in expected_names]
+
+            for idx, actual in enumerate(filtered_scraped):
+                name = actual["name"].strip().lower()
                 match = expected_companies[
-                    expected_companies["PublishedName"].str.strip().str.lower() == name.strip().lower()
+                    expected_companies["PublishedName"].str.strip().str.lower() == name
                 ]
-
-                if match.empty:
-                    issues.append(f"Unexpected company: {name}")
-                else:
-                    idx_expected = match.index[0] - expected_companies.index.min()
-                    if idx_expected != i:
+                if not match.empty:
+                    expected_idx = match.index[0] - expected_companies.index.min()
+                    if expected_idx != idx:
                         issues.append(
-                            f"Wrong order: {name} (expected position {idx_expected + 1}, found {i + 1})"
+                            f"Wrong order: {name} (expected {expected_idx + 1}, found {idx + 1})"
                         )
+
                     expected_years = str(match["OldestBestPickText"].values[0]).strip()
                     if expected_years not in actual["years_text"]:
                         issues.append(
                             f"Wrong years: {name} - Expected '{expected_years}' but found '{actual['years_text']}'"
                         )
 
+        if issues:
             results.append({
                 "Category URL": cat_url,
-                "Errors": "; ".join(issues) if issues else "No issues"
+                "Errors": "; ".join(issues)
             })
 
-    results_df = pd.DataFrame(results)
+        progress_bar.progress(min((i + 1) * progress_step, 1.0))
 
-    # --- Dashboard ---
-    st.subheader("Validation Results by Category")
-    st.dataframe(results_df)
+    # --- Results ---
+    if results:
+        results_df = pd.DataFrame(results)
 
-    total_categories = len(results_df)
-    error_categories = results_df[results_df["Errors"] != "No issues"]
-    no_error_count = total_categories - len(error_categories)
+        st.subheader("❌ Errors Found in the Following Categories")
+        st.dataframe(results_df)
 
-    st.metric("Total Categories", total_categories)
-    st.metric("Categories With Errors", len(error_categories))
-    st.metric("Categories With No Errors", no_error_count)
-    st.metric("Total Errors", error_categories["Errors"].str.count(";").sum())
+        towrite = BytesIO()
+        results_df.to_csv(towrite, index=False)
+        towrite.seek(0)
 
-    # --- Export ---
-    towrite = BytesIO()
-    results_df.to_excel(towrite, index=False, engine='openpyxl')
-    towrite.seek(0)
-
-    st.download_button(
-        label="Download results as Excel",
-        data=towrite,
-        file_name=f"bestpick_validation_{datetime.today().date()}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+        st.download_button(
+            label="Download Errors as CSV",
+            data=towrite,
+            file_name=f"bestpick_validation_errors_{datetime.today().date()}.csv",
+            mime="text/csv"
+        )
+    else:
+        st.success("✅ All categories passed validation. No errors found.")
