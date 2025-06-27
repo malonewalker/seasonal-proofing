@@ -7,6 +7,7 @@ from datetime import datetime
 from io import BytesIO
 import urllib3
 
+# --- PASSWORD PROTECTION ---
 st.title("🔒 Best Pick Reports Seasonal Web Proofing")
 
 PASSWORD = "BPRFSR"
@@ -18,7 +19,7 @@ if not st.session_state.authenticated:
     if password_input == PASSWORD:
         st.session_state.authenticated = True
         st.success("✅ Password correct. You are now logged in.")
-        st.stop()
+        st.stop()  # Safely stop this run — next will proceed
     elif password_input:
         st.error("❌ Incorrect password.")
         st.stop()
@@ -33,11 +34,11 @@ if uploaded_file:
     # Disable SSL warnings
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-    # --- Clean & Prepare ---
+    # --- Extract category-level URL ---
     def extract_category_url(url):
         parts = str(url).strip().split("/")
         if len(parts) >= 6:
-            return "/".join(parts[:5])  # e.g. https://www.bestpickreports.com/appliance-repair/atlanta
+            return "/".join(parts[:5])  # e.g., https://www.bestpickreports.com/appliance-repair/atlanta
         return None
 
     df["Category URL"] = df["Company Web Profile URL"].apply(extract_category_url)
@@ -82,7 +83,7 @@ if uploaded_file:
 
     for i, cat_url in enumerate(category_urls):
         scraped = extract_companies_from_page(cat_url)
-        time.sleep(1.0)  # One request per second
+        time.sleep(1.0)
 
         expected_companies = expected[expected["Category URL"] == cat_url]
         issues = []
@@ -103,21 +104,24 @@ if uploaded_file:
                 if name not in actual_names:
                     issues.append(f"Missing company from page: {name}")
 
-            # 3. Validate order and years
+            # 3. Check order and years
             for expected_idx, row in expected_companies.iterrows():
                 expected_name = row["PublishedName"].strip().lower()
                 expected_years = str(row["OldestBestPickText"]).strip()
 
-                # Find actual scraped record
                 matches = [c for c in scraped if c["name"].strip().lower() == expected_name]
                 if matches:
                     actual = matches[0]
                     actual_position = actual["position"]
                     expected_position = expected_companies.index.get_loc(expected_idx) + 1
+
                     if actual_position != expected_position:
                         issues.append(f"Wrong order: {expected_name} (expected {expected_position}, found {actual_position})")
+
                     if expected_years not in actual["years_text"]:
-                        issues.append(f"Wrong years: {expected_name} - Expected '{expected_years}' but found '{actual['years_text']}'")
+                        issues.append(
+                            f"Wrong years: {expected_name} - Expected '{expected_years}' but found '{actual['years_text']}'"
+                        )
 
         if issues:
             results.append({
@@ -127,7 +131,7 @@ if uploaded_file:
 
         progress_bar.progress(min((i + 1) * progress_step, 1.0))
 
-    # --- Show Only Errors ---
+    # --- Show Errors Only ---
     if results:
         results_df = pd.DataFrame(results)
 
